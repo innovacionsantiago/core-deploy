@@ -14,6 +14,19 @@ cd "$(dirname "$0")/.."
 
 echo "==> [post_deploy] $SERVICE_NAME · $(date -u +%FT%TZ)"
 
+# 0. Drift check post-rsync · ver post_deploy.python.sh para detalle.
+# Detecta archivos creados durante el post_deploy (build outputs, etc) que el
+# próximo rsync --delete borraría. V1 warn-only.
+if command -v git >/dev/null 2>&1 && [ -d .git ]; then
+  UNTRACKED_TOTAL=$(git ls-files --others --exclude-standard 2>/dev/null | wc -l)
+  if [ "$UNTRACKED_TOTAL" -gt 0 ]; then
+    echo "WARNING: [$SERVICE_NAME] $UNTRACKED_TOTAL archivo(s) untracked en prod"
+    echo "WARNING: el próximo rsync --delete los va a borrar"
+    echo "WARNING: sample (top 10):"
+    git ls-files --others --exclude-standard 2>/dev/null | head -10 | sed 's/^/WARNING:   /'
+  fi
+fi
+
 # 1. dependencias (production-only)
 if [ -f package-lock.json ]; then
   npm ci --omit=dev

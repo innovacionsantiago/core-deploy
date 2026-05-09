@@ -22,6 +22,24 @@ VENV_DIR="${VENV_DIR:-.venv}"
 
 echo "==> [post_deploy] $SERVICE_NAME · $(date -u +%FT%TZ)"
 
+# 0. Drift check post-rsync: detecta archivos creados por el post_deploy mismo
+# (e.g. caches, alembic-generated, etc) que NO están en git. Si aparecen acá
+# es porque se generaron dentro del checkout productivo y al PRÓXIMO CD el
+# `rsync --delete` los va a borrar. La pre-flight check del workflow corre
+# antes del rsync, este check captura drift introducido en este mismo deploy.
+# V1: warn-only · V2 (Wave 12+, todos los repos limpios) → abort.
+# Ver: core-deploy/ROLLBACK.md, cis-validators structure.untracked_on_prod,
+# /srv/projects/cis/scripts/audit-untracked-on-prod.sh
+if command -v git >/dev/null 2>&1 && [ -d .git ]; then
+  UNTRACKED_TOTAL=$(git ls-files --others --exclude-standard 2>/dev/null | wc -l)
+  if [ "$UNTRACKED_TOTAL" -gt 0 ]; then
+    echo "WARNING: [$SERVICE_NAME] $UNTRACKED_TOTAL archivo(s) untracked en prod"
+    echo "WARNING: el próximo rsync --delete los va a borrar"
+    echo "WARNING: sample (top 10):"
+    git ls-files --others --exclude-standard 2>/dev/null | head -10 | sed 's/^/WARNING:   /'
+  fi
+fi
+
 # 1. venv (idempotente)
 if [ ! -d "$VENV_DIR" ]; then
   echo "==> Creating venv at $VENV_DIR"

@@ -131,6 +131,37 @@ jobs:
         shell: bash
         run: ssh vps-cis "mkdir -p '$TARGET_PATH'"
 
+      - name: Pre-flight · audit untracked-on-prod (warn-only V1)
+        # W11.5 · root cause cis-mailer W9.5 incidente: rsync --delete borró 8
+        # archivos huérfanos (vivían sólo en filesystem prod, nunca commiteados)
+        # → service crash. Esta verificación corre EN VPS antes de rsync para
+        # detectar archivos en peligro y dejar evidencia en el log del run.
+        # V1: warn-only (no abort). V2 (cuando todos los repos cierren C5):
+        # ramp a abort hard.
+        # Ver: cis-validators structure.untracked_on_prod + ROLLBACK.md
+        shell: bash
+        continue-on-error: true
+        run: |
+          ssh vps-cis "
+            set -e
+            cd '$TARGET_PATH' 2>/dev/null || { echo '::notice::target_path no existe aún (primer deploy)'; exit 0; }
+            if [ ! -d .git ]; then
+              echo '::notice::no es git repo en prod, skip pre-flight'
+              exit 0
+            fi
+            UNTRACKED=\$(git ls-files --others --exclude-standard 2>/dev/null || true)
+            COUNT=\$(printf '%s\n' \"\$UNTRACKED\" | grep -c '.' || true)
+            if [ \"\$COUNT\" -gt 0 ]; then
+              echo \"::warning::[$SERVICE_NAME] \$COUNT archivo(s) untracked en prod serán BORRADOS por rsync --delete\"
+              echo \"::warning::sample (top 20):\"
+              printf '%s\n' \"\$UNTRACKED\" | head -20 | sed 's/^/::warning::  /'
+              echo \"::warning::audit completo: bash /srv/projects/cis/scripts/audit-untracked-on-prod.sh\"
+              echo \"::warning::commit antes del próximo deploy o agregar a .gitignore. Ver core-deploy/ROLLBACK.md.\"
+            else
+              echo \"::notice::[$SERVICE_NAME] prod git ls-files --others limpio\"
+            fi
+          "
+
       - name: Rsync repo to vps-cis
         shell: bash
         working-directory: ${{ inputs.working_directory }}

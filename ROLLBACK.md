@@ -158,6 +158,59 @@ gunzip -c /srv/projects/cis/backups/db/cis_mailer_<fecha>.sql.gz | \
    en cada repo target ANTES de habilitar push-on-main". Ese ticket vive en
    `cis/HUMAN-PENDING.md` C-cd-untracked-audit.
 
+## Prevention · pre-flight untracked check (W11.5)
+
+Después del incidente cis-mailer W9.5, el reusable `cd-vps-cis.yml` ganó un step
+**Pre-flight · audit untracked-on-prod (warn-only V1)** que corre EN VPS antes
+del `rsync --delete`:
+
+```yaml
+- name: Pre-flight · audit untracked-on-prod (warn-only V1)
+  shell: bash
+  continue-on-error: true
+  run: |
+    ssh vps-cis "
+      cd '$TARGET_PATH' && [ -d .git ] || exit 0
+      UNTRACKED=\$(git ls-files --others --exclude-standard)
+      [ -n \"\$UNTRACKED\" ] && {
+        echo \"::warning::archivos untracked serán BORRADOS por rsync --delete\"
+        printf '%s\n' \"\$UNTRACKED\" | head -20 | sed 's/^/::warning::  /'
+      }
+    "
+```
+
+V1 = warn-only · queda en el log del run pero no aborta. V2 (cuando todos los
+repos cierren HUMAN-PENDING C5) = ramp a abort hard.
+
+Adicional: los templates `post_deploy.python.sh` y `post_deploy.ts.sh` también
+hacen el check post-rsync para capturar drift introducido por el deploy mismo
+(p.ej. build outputs no gitignored).
+
+### Audit cross-repo (one-shot per ola)
+
+```bash
+ssh illanes00@vps-cis
+bash /srv/projects/cis/scripts/audit-untracked-on-prod.sh
+# → text en stderr · JSON en /var/log/cis-validators/untracked-audit-YYYYMMDD.json
+# Exit codes: 0 clean · 1 hay source untracked · 2 posibles secretos
+```
+
+### Validator structurado · suite cis-validators
+
+`structure.untracked_on_prod` (cis-validators) es la versión auditable:
+emite findings por archivo (HIGH si source · CRITICAL si secret · MEDIUM si
+doc) y se integra al gate de severidad del orchestrator:
+
+```yaml
+# cis-validators/config/targets.yaml — agregar a cualquier target prod:
+- name: cis_<svc>
+  layers: [structure]   # entre otros
+  meta:
+    repo_root: /srv/projects/cds/cis/cis-<svc>
+```
+
+Tracking: HUMAN-PENDING C5 (cerrado 2026-05-09 W11.5).
+
 ## Lecciones W9.5 (cis-mailer · 2026-05-09)
 
 1. **`rsync --delete` es brutal**: borra todo lo que no esté en el repo, incluso
@@ -170,6 +223,10 @@ gunzip -c /srv/projects/cis/backups/db/cis_mailer_<fecha>.sql.gz | \
    find <pkg-principal>/ -name "*.py" | wc -l
    # si los counts no matchean → hay archivos no commiteados que se perderán.
    ```
+   **Nota W11.5**: este check ya está automatizado en el reusable workflow
+   (warn-only V1) + en los templates post_deploy + en el script
+   `/srv/projects/cis/scripts/audit-untracked-on-prod.sh` + en el suite
+   `cis-validators structure.untracked_on_prod`. Sección "Prevention" arriba.
 
 2. **`secrets: inherit` cross-repo NO funciona en GitHub Free org → private repo**.
    Workaround: setear los secrets a nivel repo manualmente:
