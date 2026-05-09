@@ -1,0 +1,216 @@
+# core-deploy reusable CD workflow para vps-cis (108.175.4.190)
+#
+# Uso desde repo consumidor:
+#   .github/workflows/deploy.yml:
+#     name: Deploy
+#     on:
+#       push:
+#         branches: [main]
+#     jobs:
+#       deploy:
+#         uses: innovacionsantiago/core-deploy/.github/workflows/cd-vps-cis.yml@main
+#         with:
+#           target_path: /srv/projects/cds/cis/cis-mailer
+#           service_name: cis-mailer
+#         secrets: inherit
+#
+# Org secrets requeridos:
+#   CIS_VPS_HOST = 108.175.4.190
+#   CIS_VPS_USER = illanes00
+#   CIS_VPS_SSH_KEY = ed25519 private key
+#
+# NOTA seguridad: workflow NO usa contexto untrusted en run blocks.
+
+name: cd-vps-cis (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      target_path:
+        description: "Path absoluto en vps-cis (debe empezar con /srv/)"
+        required: true
+        type: string
+      service_name:
+        description: "systemd unit name (sin .service)"
+        required: true
+        type: string
+      post_deploy_script:
+        description: "Script post-deploy relativo a target_path"
+        required: false
+        type: string
+        default: "deploy/post_deploy.sh"
+      health_url:
+        description: "URL health check (curl desde el host)"
+        required: false
+        type: string
+        default: "http://127.0.0.1/healthz"
+      rsync_excludes:
+        description: "Patrones extra rsync --exclude (separados por espacio)"
+        required: false
+        type: string
+        default: ""
+      notify_on_failure:
+        description: "Notificar via Resend al fallar"
+        required: false
+        type: boolean
+        default: false
+      working_directory:
+        description: "Subdirectory del repo a sincronizar"
+        required: false
+        type: string
+        default: "."
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: rsync+postdeploy+healthz
+    runs-on: ubuntu-latest
+    concurrency:
+      group: cd-vps-cis-${{ inputs.service_name }}
+      cancel-in-progress: false
+    env:
+      VPS_HOST: ${{ secrets.CIS_VPS_HOST }}
+      VPS_USER: ${{ secrets.CIS_VPS_USER }}
+      TARGET_PATH: ${{ inputs.target_path }}
+      SERVICE_NAME: ${{ inputs.service_name }}
+      POST_DEPLOY_SCRIPT: ${{ inputs.post_deploy_script }}
+      HEALTH_URL: ${{ inputs.health_url }}
+      EXTRA_EXCLUDES: ${{ inputs.rsync_excludes }}
+      WORKDIR: ${{ inputs.working_directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate inputs and secrets
+        env:
+          SSH_KEY_PRESENT: ${{ secrets.CIS_VPS_SSH_KEY != '' }}
+        shell: bash
+        run: |
+          missing=0
+          [ -z "$VPS_HOST" ] && { echo "::error::CIS_VPS_HOST org secret missing"; missing=1; }
+          [ -z "$VPS_USER" ] && { echo "::error::CIS_VPS_USER org secret missing"; missing=1; }
+          [ "$SSH_KEY_PRESENT" != "true" ] && { echo "::error::CIS_VPS_SSH_KEY org secret missing"; missing=1; }
+          [ -z "$TARGET_PATH" ] && { echo "::error::target_path required"; missing=1; }
+          [ -z "$SERVICE_NAME" ] && { echo "::error::service_name required"; missing=1; }
+          case "$TARGET_PATH" in
+            /srv/*) ;;
+            *) echo "::error::target_path must start with /srv/ (got: $TARGET_PATH)"; missing=1 ;;
+          esac
+          [ "$missing" = "1" ] && exit 1
+          echo "::notice::Deploy $SERVICE_NAME to $VPS_USER@$VPS_HOST:$TARGET_PATH"
+
+      - name: Setup SSH
+        env:
+          SSH_KEY: ${{ secrets.CIS_VPS_SSH_KEY }}
+        shell: bash
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          chmod 644 ~/.ssh/known_hosts
+          {
+            echo "Host vps-cis"
+            echo "  HostName $VPS_HOST"
+            echo "  User $VPS_USER"
+            echo "  IdentityFile $HOME/.ssh/deploy_key"
+            echo "  IdentitiesOnly yes"
+            echo "  StrictHostKeyChecking accept-new"
+            echo "  ServerAliveInterval 30"
+          } > ~/.ssh/config
+          chmod 600 ~/.ssh/config
+          ssh -o BatchMode=yes vps-cis 'echo SSH_OK && hostname && id -un' || {
+            echo "::error::SSH connectivity failed"
+            exit 1
+          }
+
+      - name: Ensure target_path on remote
+        shell: bash
+        run: ssh vps-cis "mkdir -p '$TARGET_PATH'"
+
+      - name: Rsync repo to vps-cis
+        shell: bash
+        working-directory: ${{ inputs.working_directory }}
+        run: |
+          excludes=(
+            --exclude='.git'
+            --exclude='.github'
+            --exclude='.venv'
+            --exclude='venv'
+            --exclude='__pycache__'
+            --exclude='*.pyc'
+            --exclude='.pytest_cache'
+            --exclude='.mypy_cache'
+            --exclude='.ruff_cache'
+            --exclude='node_modules'
+            --exclude='.next'
+            --exclude='coverage'
+            --exclude='.coverage'
+            --exclude='dist'
+            --exclude='build'
+            --exclude='.env'
+            --exclude='.env.local'
+            --exclude='*.log'
+          )
+          if [ -n "$EXTRA_EXCLUDES" ]; then
+            for pat in $EXTRA_EXCLUDES; do
+              excludes+=(--exclude="$pat")
+            done
+          fi
+          rsync -az --delete "${excludes[@]}" \
+            -e "ssh -o BatchMode=yes" \
+            ./ "vps-cis:$TARGET_PATH/"
+
+      - name: Run post-deploy script
+        shell: bash
+        run: |
+          ssh vps-cis "set -e; cd '$TARGET_PATH' && \
+            if [ -f '$POST_DEPLOY_SCRIPT' ]; then \
+              export SERVICE_NAME='$SERVICE_NAME' HEALTH_URL='$HEALTH_URL'; \
+              bash '$POST_DEPLOY_SCRIPT'; \
+            else \
+              echo 'WARNING: $POST_DEPLOY_SCRIPT not found in target, skipping'; \
+            fi"
+
+      - name: Health check (remote curl)
+        shell: bash
+        run: |
+          ssh vps-cis "curl -fsS --max-time 10 --retry 3 --retry-delay 2 '$HEALTH_URL'" || {
+            echo "::error::Health check failed at $HEALTH_URL"
+            exit 1
+          }
+          echo "::notice::Health check OK"
+
+      - name: Notify on failure
+        if: failure() && inputs.notify_on_failure
+        env:
+          RESEND_KEY: ${{ secrets.RESEND_API_KEY_CIS }}
+          SVC: ${{ inputs.service_name }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        shell: bash
+        run: |
+          if [ -z "$RESEND_KEY" ]; then
+            echo "::warning::RESEND_API_KEY_CIS missing, cannot notify"
+            exit 0
+          fi
+          payload=$(python3 -c "
+          import json, os
+          print(json.dumps({
+              'from': 'deploy@innovacionsantiago.cl',
+              'to': ['hola@innovacionsantiago.cl'],
+              'subject': f'[deploy-fail] {os.environ[\"SVC\"]} - {os.environ[\"REPO\"]}',
+              'text': f'Deploy {os.environ[\"SVC\"]} from {os.environ[\"REPO\"]} run {os.environ[\"RUN_ID\"]} FAILED.',
+          }))")
+          curl -fsS -X POST 'https://api.resend.com/emails' \
+            -H "Authorization: Bearer $RESEND_KEY" \
+            -H 'Content-Type: application/json' \
+            -d "$payload" || echo "::warning::Resend notification failed"
+
+      - name: Cleanup SSH key
+        if: always()
+        shell: bash
+        run: rm -f ~/.ssh/deploy_key ~/.ssh/config
