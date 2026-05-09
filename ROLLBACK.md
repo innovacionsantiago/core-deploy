@@ -158,29 +158,55 @@ gunzip -c /srv/projects/cis/backups/db/cis_mailer_<fecha>.sql.gz | \
    en cada repo target ANTES de habilitar push-on-main". Ese ticket vive en
    `cis/HUMAN-PENDING.md` C-cd-untracked-audit.
 
-## Prevention · pre-flight untracked check (W11.5)
+## Prevention · pre-flight untracked check (W11.5 V1 → W12.6 V2)
 
-Después del incidente cis-mailer W9.5, el reusable `cd-vps-cis.yml` ganó un step
-**Pre-flight · audit untracked-on-prod (warn-only V1)** que corre EN VPS antes
-del `rsync --delete`:
+Después del incidente cis-mailer W9.5 (warn-only V1), el incidente cis-inbox
+W12 (45 archivos `rsync --delete`'d con V1 advirtiendo pero no abortando)
+escaló el step a **Pre-flight V2 fail-on-error con classifier de severidad**.
+Corre EN VPS antes del `rsync --delete` y clasifica untracked en 3 tiers:
+
+| Severidad | Patrón | Acción |
+|---|---|---|
+| **CRITICAL** | `.env*`, `*.pem`, `*.key`, `*.pfx`, `*credentials*.json`, `*service-account*.json` | **Siempre abort** (`exit 2`). No bypass. |
+| **HIGH** | `.py`/`.ts`/`.tsx`/`.js`/`.jsx`/`.vue`/`.go`/`.rs`/`.rb`/`.sql` source · `alembic/versions/*.py` · `.github/workflows/*.yml` | Abort si `untracked_audit_strict=true` (default), unless `untracked_audit_bypass=true`. |
+| **OTHER** (LOW/MEDIUM) | tests, docs, data, build outputs | Warn-only, sin abort. |
 
 ```yaml
-- name: Pre-flight · audit untracked-on-prod (warn-only V1)
-  shell: bash
-  continue-on-error: true
-  run: |
-    ssh vps-cis "
-      cd '$TARGET_PATH' && [ -d .git ] || exit 0
-      UNTRACKED=\$(git ls-files --others --exclude-standard)
-      [ -n \"\$UNTRACKED\" ] && {
-        echo \"::warning::archivos untracked serán BORRADOS por rsync --delete\"
-        printf '%s\n' \"\$UNTRACKED\" | head -20 | sed 's/^/::warning::  /'
-      }
-    "
+# .github/workflows/cd-vps-cis.yml (extracto)
+inputs:
+  untracked_audit_strict:
+    description: "V2 audit pre-flight: si HIGH severity untracked → abort. CRITICAL siempre aborta."
+    required: false
+    type: boolean
+    default: true
+  untracked_audit_bypass:
+    description: "Escape hatch: forzar deploy aunque audit detecte HIGH. Solo rollback emergencia."
+    required: false
+    type: boolean
+    default: false
 ```
 
-V1 = warn-only · queda en el log del run pero no aborta. V2 (cuando todos los
-repos cierren HUMAN-PENDING C5) = ramp a abort hard.
+**Caller back-compat**: cualquier consumidor existente del reusable hereda
+`strict=true` por default → comportamiento safe. Para repos con prod limpio
+no hay cambio de UX (no untracked → no findings → no abort).
+
+**Override per-call** (override en el `with:` del consumidor):
+- `untracked_audit_strict: false` → degrada V2 a comportamiento V1 (warn-only legacy).
+  Útil temporalmente mientras se resuelve drift en un repo concreto.
+- `untracked_audit_bypass: true` → fuerza deploy aún con HIGH detectado.
+  **Solo rollback emergencia** (cuando bajar prod no es opción y se asume el riesgo).
+  CRITICAL sigue abortando incluso con bypass=true (no se bypassean secretos).
+
+**Ramp history**:
+- W11.5 · V1 commit `9633238` · warn-only con `continue-on-error: true`.
+- W12.6 · V2 commit `2060928` · classifier severidad + abort hard CRITICAL/HIGH.
+  Habilita C6 ramp `workflow_dispatch → push-on-main` sin riesgo de incidente
+  cis-inbox-style.
+
+**Smoke V2** (2026-05-09 W12.6+W13): cis-mailer push-on-main run `25614495895`
+verde 13s · prod limpio (`git ls-files --others` → vacío) · V2 noop OK ·
+back-compat confirmada. cis-sign push fail correcto (13 untracked HIGH detectados,
+abort sin tocar prod).
 
 Adicional: los templates `post_deploy.python.sh` y `post_deploy.ts.sh` también
 hacen el check post-rsync para capturar drift introducido por el deploy mismo
@@ -209,7 +235,8 @@ doc) y se integra al gate de severidad del orchestrator:
     repo_root: /srv/projects/cds/cis/cis-<svc>
 ```
 
-Tracking: HUMAN-PENDING C5 (cerrado 2026-05-09 W11.5).
+Tracking: HUMAN-PENDING C5 (cerrado 2026-05-09 W11.5) + C6.preflight-v2
+(cerrado 2026-05-09 W14 con commit `2060928`).
 
 ## Lecciones W9.5 (cis-mailer · 2026-05-09)
 
