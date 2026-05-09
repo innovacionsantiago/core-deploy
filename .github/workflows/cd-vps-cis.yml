@@ -25,19 +25,6 @@ name: cd-vps-cis (reusable)
 
 on:
   workflow_call:
-    secrets:
-      # Declarados explícitamente: org secrets NO se propagan vía
-      # `secrets: inherit` cuando un caller PRIVATE invoca un reusable
-      # workflow en repo PUBLIC (gotcha GitHub Actions). El caller debe
-      # usar `secrets: inherit` y este reusable los expone con nombre.
-      CIS_VPS_HOST:
-        required: true
-      CIS_VPS_USER:
-        required: true
-      CIS_VPS_SSH_KEY:
-        required: true
-      RESEND_API_KEY_CIS:
-        required: false
     inputs:
       target_path:
         description: "Path absoluto en vps-cis (debe empezar con /srv/)"
