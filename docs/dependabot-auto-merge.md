@@ -113,8 +113,95 @@ sin pyproject/package.json). Dependabot + cis-cve-scan = defensa en profundidad.
 | cis-cve-scan | runtime, system packages, hardcoded versions | horas (cron) |
 | Sentry / logs | runtime exploit attempts | tiempo real |
 
+## V2 deployment (W17 · 2026-05-10)
+
+Estado actual: **V2 LIVE** en 20 de 21 repos del batch original (cis-auth excluido por
+politica · validar SSO authentik manual).
+
+### Workflow desplegado
+
+`.github/workflows/dependabot-auto-merge.yml` (ver template canonico
+`templates/.github/workflows/dependabot-auto-merge.yml`):
+
+- `if: github.actor == 'dependabot[bot]'` — el job sólo corre en PRs del bot.
+- Step 1: `dependabot/fetch-metadata@v2` extrae `update-type` (semver-patch/minor/major).
+- Step 2 (sólo si patch): `gh pr review --approve` — auto-aprueba el PR.
+- Step 3 (sólo si patch): `gh pr merge --auto --squash` — encola merge para
+  cuando `mergeable_state=clean` (CI green + branch protection si la hay).
+- Step 4 (si NO es patch): comment recordando review humana.
+
+Hardening: ningún `${{ ... }}` en `run:` blocks · todos los valores derivados de
+events pasan por `env:` con quoting estricto. Ref: [GitHub Actions injection guide](https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/).
+
+### Repo settings ajustados
+
+Para que `gh pr merge --auto` funcione, cada repo debe tener
+`allow_auto_merge=true`. El script de deploy lo habilita automaticamente
+(`PATCH /repos/{owner}/{repo} allow_auto_merge=true`).
+
+### Branch protection · core-* públicos (3 repos)
+
+`core-deploy`, `core-python-base`, `core-ts-base`:
+
+- `required_pull_request_reviews=1` (W15.4) · Dependabot bot dispara su propio
+  approve via el workflow → la review count llega a 1 sin humano.
+- `required_status_checks` queda **null** intencionalmente. Justificación: estos
+  3 repos son **reusable-only** (`on: workflow_call`) · no tienen suite CI propia
+  · agregar `required_status_checks=["ci"]` bloquearia toda PR para siempre. La
+  proteccion real viene de `dismiss_stale_reviews=true + required_linear_history`.
+
+### Excepciones explícitas
+
+- **cis-auth** · Docker authentik · NO se le copia el workflow. Validar SSO en
+  ventana low-traffic.
+- **cis-portal / cis-tree** · todavia sin `dependabot.yml` en main · entrarán
+  cuando se complete onboarding gh-actions-only (W14.5 partial).
+
+### Free tier · auto-merge en repos privados
+
+GitHub habilitó auto-merge para repos privados Free desde 2022 (no requiere
+upgrade a Team). El feature `Allow auto-merge` se activa por repo via
+`PATCH /repos/{owner}/{repo}` con `allow_auto_merge=true` · no requiere plan
+pago.
+
+Branch protection en repos **privados** sigue requiriendo Team plan ($4/usuario)
+— el W15.4 doc lista esto como C7 (HUMAN-PENDING). En W17 los privados quedan
+con auto-merge habilitado pero **sin branch protection**: GitHub mergea el PR
+de Dependabot apenas se cumpla `mergeable_state=clean` (que para repos sin
+protection significa "no conflicts" sólo · NO fuerza CI green).
+
+> **Implicacion**: en repos privados sin branch protection, el `--auto` flag se
+> degrada de "merge cuando CI passe" a "merge cuando no haya conflicts". Para
+> los repos privados con CI estable (cis-mailer, cis-platform, cis-core, etc.)
+> esto es aceptable (PRs de patch con tests rotos quedan sin mergear porque
+> Dependabot reintenta hasta que el PR sea mergeable). Para los críticos T0
+> (cis-auth, cis-mailer) deberíamos elevar a Team plan o usar un PAT con scope
+> limitado para forzar wait-on-checks via API custom.
+
+### Script bulk-deploy
+
+`/srv/projects/core/core-deploy/scripts/deploy-dependabot-auto-merge.sh`
+(uso de la GitHub Contents API — no toca working trees locales · idempotente):
+
+```bash
+DRY_RUN=1 ./deploy-dependabot-auto-merge.sh             # preview
+./deploy-dependabot-auto-merge.sh                        # apply all
+REPOS=cis-mailer,cis-mando ./deploy-dependabot-auto-merge.sh  # subset
+```
+
+## Test plan + verificación
+
+1. Esperar siguiente Dependabot patch PR (Dependabot abre diariamente para
+   T0/T1, semanal para T2/T3) · verify auto-merge runs + auto-approves +
+   auto-squashes.
+2. O simulacion: `gh pr comment <PR-URL> --body "@dependabot rebase"` en una
+   PR patch ya abierta — Dependabot rebasa, dispara `pull_request synchronize`,
+   el workflow corre.
+
 ## Histórico
 
 - **2026-05-08**: incidente cryptominer via Next.js CVE-2025-55182. Detección post-facto.
 - **2026-05-09 W14**: Dependabot config rolled out cross-org (18 repos · agent-w14-dependabot).
-- **2026-05-09 V2 pendiente**: branch protection + workflow auto-merge (humano).
+- **2026-05-09 W14.5**: ampliacion a 21 repos del batch (incluye 3 core-*).
+- **2026-05-09 W15.4**: branch protection en 3 core-* publics (require 1 review · enforce_admins=false).
+- **2026-05-10 W17**: V2 auto-merge LIVE · workflow desplegado en 20/21 repos via Contents API · `allow_auto_merge=true` habilitado en los 20 · branch protection core-* sin status_checks (reusable-only justification).

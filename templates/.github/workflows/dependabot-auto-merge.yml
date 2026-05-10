@@ -1,0 +1,71 @@
+# Dependabot V2 auto-merge · template canónico (core-deploy)
+#
+# Origen: agent-w17-dependabot-automerge (2026-05-10).
+# Lección post CVE-2025-55182 (incidente 2026-05-08) · doc completa:
+#   /srv/projects/core/core-deploy/docs/dependabot-auto-merge.md
+#
+# Política:
+#   - patch (semver-patch) · auto-approve + auto-merge si CI green
+#     (--auto requiere que el repo tenga "Allow auto-merge" habilitado y
+#     branch protection con required_status_checks; sin protection, GitHub
+#     mergea apenas se cumple `mergeable_state=clean`).
+#   - minor / major · solo se postea comment recordando review humano.
+#   - security-update (cualquier severidad) · NO se auto-mergea aqui ·
+#     queda en cola humana (tag automated + label security en el PR).
+#
+# Como desplegar a otros repos (W17 batch):
+#   cp templates/.github/workflows/dependabot-auto-merge.yml \
+#      <repo>/.github/workflows/dependabot-auto-merge.yml
+#   git -C <repo> add .github/workflows/dependabot-auto-merge.yml
+#   git -C <repo> commit -m "feat(security): Dependabot V2 auto-merge"
+#   git -C <repo> push
+#
+# Excepciones explicitas (NO copiar este workflow):
+#   - cis-auth (Docker authentik) · validar SSO manual.
+#   - cualquier repo con tasa CI roja > 30 % (ver dashboard cis-mando).
+#
+# Hardening: nunca interpolar `${{ }}` directamente en `run:`. Todos los
+# valores derivados de eventos pasan por `env:` con quoting estricto.
+# Ref: https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
+
+name: Dependabot Auto-Merge
+
+on: pull_request
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: Auto-approve patch
+        if: steps.meta.outputs.update-type == 'version-update:semver-patch'
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr review --approve "$PR_URL"
+
+      - name: Auto-merge patch (when CI green)
+        if: steps.meta.outputs.update-type == 'version-update:semver-patch'
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge --auto --squash "$PR_URL"
+
+      - name: Comment on minor/major
+        if: steps.meta.outputs.update-type != 'version-update:semver-patch'
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment "$PR_URL" --body "Dependabot ${UPDATE_TYPE} · requiere review humana (W17 policy · auto-merge solo aplica a semver-patch)."
