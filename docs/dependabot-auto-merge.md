@@ -148,9 +148,19 @@ events pasan por `env:` con quoting estricto. Ref: [GitHub Actions injection gui
 
 ### Repo settings ajustados
 
-Para que `gh pr merge --auto` funcione, cada repo debe tener
-`allow_auto_merge=true`. El script de deploy lo habilita automaticamente
+El script de deploy intenta habilitar `allow_auto_merge=true` en cada repo
 (`PATCH /repos/{owner}/{repo} allow_auto_merge=true`).
+
+> **Free tier silent-rejection del flag (cosmético)**: GitHub acepta el PATCH
+> (HTTP 200) pero deja `allow_auto_merge=false` en repos privados bajo plan
+> Free. Solo los 3 publicos (core-deploy, core-python-base, core-ts-base)
+> terminan con el flag activo en el repo settings. **Esto NO bloquea
+> `gh pr merge --auto` desde un workflow** · el flag controla la visibilidad
+> del boton "Auto-merge" en la UI · la API call funciona igual.
+> Verificado live W17: cis-mapa#1 (privado, allow_auto_merge=false) MERGED
+> exitosamente via `gh pr merge --auto --squash` desde el workflow · 8s de
+> end-to-end (fetch-metadata → review --approve → merge --auto --squash →
+> PR merged).
 
 ### Branch protection · core-* públicos (3 repos)
 
@@ -170,26 +180,62 @@ Para que `gh pr merge --auto` funcione, cada repo debe tener
 - **cis-portal / cis-tree** · todavia sin `dependabot.yml` en main · entrarán
   cuando se complete onboarding gh-actions-only (W14.5 partial).
 
-### Free tier · auto-merge en repos privados
+### Free tier · cobertura del workaround
 
-GitHub habilitó auto-merge para repos privados Free desde 2022 (no requiere
-upgrade a Team). El feature `Allow auto-merge` se activa por repo via
-`PATCH /repos/{owner}/{repo}` con `allow_auto_merge=true` · no requiere plan
-pago.
+Branch protection en repos **privados** sigue requiriendo Team plan (USD 4/user)
+— ver C7 HUMAN-PENDING. En W17 los 17 privados quedan con auto-merge
+funcional (workflow + `--auto` corre OK aun sin el flag activo) pero **sin
+required_status_checks**: GitHub mergea el PR de Dependabot apenas
+`mergeable_state=clean` (significa "no conflicts" sólo · NO fuerza CI green).
 
-Branch protection en repos **privados** sigue requiriendo Team plan ($4/usuario)
-— el W15.4 doc lista esto como C7 (HUMAN-PENDING). En W17 los privados quedan
-con auto-merge habilitado pero **sin branch protection**: GitHub mergea el PR
-de Dependabot apenas se cumpla `mergeable_state=clean` (que para repos sin
-protection significa "no conflicts" sólo · NO fuerza CI green).
+Verificado live: cis-mapa#1 mergeado at 00:40:18 UTC, **antes** de que CI
+completara (CI termino a 00:40:34). Sin branch protection no hay forma de
+forzar el wait-on-checks via `--auto`.
 
-> **Implicacion**: en repos privados sin branch protection, el `--auto` flag se
-> degrada de "merge cuando CI passe" a "merge cuando no haya conflicts". Para
-> los repos privados con CI estable (cis-mailer, cis-platform, cis-core, etc.)
-> esto es aceptable (PRs de patch con tests rotos quedan sin mergear porque
-> Dependabot reintenta hasta que el PR sea mergeable). Para los críticos T0
-> (cis-auth, cis-mailer) deberíamos elevar a Team plan o usar un PAT con scope
-> limitado para forzar wait-on-checks via API custom.
+**Mitigacion ya aplicada**: en repos T2/T3 con CI flaky no es problema porque
+si el PR mergea y rompe main, el siguiente CI run en main lo detecta y se
+puede revertir. Para los T0/T1 criticos (cis-auth, cis-mailer, cis-platform,
+cis-core, cis-inbox, cis-sign) lo correcto es upgrade a Team plan.
+
+**Workaround alternativo sin Team plan** (trigger en check_suite.completed):
+
+```yaml
+# .github/workflows/dependabot-merge-on-checks.yml
+on:
+  check_suite:
+    types: [completed]
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  merge:
+    if: github.event.check_suite.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Find Dependabot PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.check_suite.head_sha }}
+        run: |
+          pr=$(gh api "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/pulls" \
+                 --jq '.[] | select(.user.login=="dependabot[bot]") | .number' | head -1)
+          echo "number=${pr:-}" >>"$GITHUB_OUTPUT"
+      - name: Squash merge if previously approved
+        if: steps.pr.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          # Trust auto-approve del workflow previo como proxy de "es patch".
+          approved=$(gh pr view "$PR_NUMBER" --json reviews \
+                       --jq '[.reviews[] | select(.state=="APPROVED")] | length')
+          [ "$approved" -gt 0 ] && gh pr merge "$PR_NUMBER" --squash --delete-branch
+```
+
+Ese workaround NO está deployado todavía (W17 deja documentado). Activarlo si
+el comportamiento "merge antes de CI" se vuelve problematico en T0/T1 antes
+del Team plan.
 
 ### Script bulk-deploy
 
