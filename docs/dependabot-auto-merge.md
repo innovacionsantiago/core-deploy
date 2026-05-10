@@ -124,11 +124,24 @@ politica · validar SSO authentik manual).
 `templates/.github/workflows/dependabot-auto-merge.yml`):
 
 - `if: github.actor == 'dependabot[bot]'` — el job sólo corre en PRs del bot.
-- Step 1: `dependabot/fetch-metadata@v2` extrae `update-type` (semver-patch/minor/major).
-- Step 2 (sólo si patch): `gh pr review --approve` — auto-aprueba el PR.
-- Step 3 (sólo si patch): `gh pr merge --auto --squash` — encola merge para
-  cuando `mergeable_state=clean` (CI green + branch protection si la hay).
-- Step 4 (si NO es patch): comment recordando review humana.
+- Step 1: `dependabot/fetch-metadata@v2` extrae `update-type`, `dependency-group`,
+  `dependency-names`, etc.
+- Step 2 (auto-approve) si **alguna** de estas condiciones se cumple:
+    - `update-type == 'version-update:semver-patch'` (single-package patch), **o**
+    - `dependency-group == 'patch-updates'` (PR grupal del grupo patch-updates
+      definido en dependabot.yml).
+- Step 3 (auto-merge `--auto --squash`): mismas condiciones que el step 2.
+- Step 4 (comment minor/major/non-patch-group): si no cumple, postea un
+  comentario recordando review humana.
+
+#### Por qué necesitamos chequear `dependency-group`
+
+`fetch-metadata@v2` devuelve `update-type:null` para PRs grupales (cuando un
+PR bumpea N paquetes a la vez, no hay un único update-type). Sin el check de
+grupo, todo PR `patch-updates` quedaria fuera de auto-merge — derrotando el
+proposito del groupado en `dependabot.yml`. El grupo `security-updates`
+intencionalmente queda fuera de auto-merge (mix de severities + update-types
+no es seguro auto-mergearlo).
 
 Hardening: ningún `${{ ... }}` en `run:` blocks · todos los valores derivados de
 events pasan por `env:` con quoting estricto. Ref: [GitHub Actions injection guide](https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/).
