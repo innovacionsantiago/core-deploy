@@ -5,13 +5,21 @@
 #   /srv/projects/core/core-deploy/docs/dependabot-auto-merge.md
 #
 # Política:
-#   - patch (semver-patch) · auto-approve + auto-merge si CI green
-#     (--auto requiere que el repo tenga "Allow auto-merge" habilitado y
-#     branch protection con required_status_checks; sin protection, GitHub
-#     mergea apenas se cumple `mergeable_state=clean`).
-#   - minor / major · solo se postea comment recordando review humano.
-#   - security-update (cualquier severidad) · NO se auto-mergea aqui ·
-#     queda en cola humana (tag automated + label security en el PR).
+#   - update-type == 'version-update:semver-patch' (single-package patch) ·
+#     auto-approve + auto-merge si CI green.
+#   - dependency-group == 'patch-updates' (grouped patch) · auto-approve +
+#     auto-merge si CI green. fetch-metadata devuelve update-type:null para
+#     PRs grupales · usamos el nombre del grupo (configurado en dependabot.yml)
+#     como senal explicita de patch-only.
+#   - minor / major (incluye security-updates como grupo · contiene mix de
+#     severities/update-types) · solo se postea comment recordando review
+#     humano.
+#
+# --auto requiere "Allow auto-merge" habilitado en el repo (PATCH
+# /repos/{owner}/{repo} allow_auto_merge=true · ver
+# scripts/deploy-dependabot-auto-merge.sh) + idealmente branch protection con
+# required_status_checks. Sin protection, GitHub mergea apenas
+# mergeable_state=clean (sin conflicts).
 #
 # Como desplegar a otros repos (W17 batch):
 #   cp templates/.github/workflows/dependabot-auto-merge.yml \
@@ -48,24 +56,35 @@ jobs:
           github-token: "${{ secrets.GITHUB_TOKEN }}"
 
       - name: Auto-approve patch
-        if: steps.meta.outputs.update-type == 'version-update:semver-patch'
+        if: |
+          steps.meta.outputs.update-type == 'version-update:semver-patch' ||
+          steps.meta.outputs.dependency-group == 'patch-updates'
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh pr review --approve "$PR_URL"
 
       - name: Auto-merge patch (when CI green)
-        if: steps.meta.outputs.update-type == 'version-update:semver-patch'
+        if: |
+          steps.meta.outputs.update-type == 'version-update:semver-patch' ||
+          steps.meta.outputs.dependency-group == 'patch-updates'
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh pr merge --auto --squash "$PR_URL"
 
-      - name: Comment on minor/major
-        if: steps.meta.outputs.update-type != 'version-update:semver-patch'
+      - name: Comment on minor/major/non-patch-group
+        if: |
+          steps.meta.outputs.update-type != 'version-update:semver-patch' &&
+          steps.meta.outputs.dependency-group != 'patch-updates'
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+          DEP_GROUP: ${{ steps.meta.outputs.dependency-group }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh pr comment "$PR_URL" --body "Dependabot ${UPDATE_TYPE} · requiere review humana (W17 policy · auto-merge solo aplica a semver-patch)."
+          label="${UPDATE_TYPE:-(unknown update-type)}"
+          if [ -n "${DEP_GROUP}" ]; then
+            label="${label} · group=${DEP_GROUP}"
+          fi
+          gh pr comment "$PR_URL" --body "Dependabot ${label} · requiere review humana (W17 policy · auto-merge solo aplica a semver-patch o group=patch-updates)."
