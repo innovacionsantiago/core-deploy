@@ -9,7 +9,12 @@
 #   - venv en .venv (creado on-demand si no existe)
 #   - python3.12 explícito (ADR-018 servicios nuevos)
 #   - alembic upgrade idempotente · NO falla si no hay migrations/
-#   - sudo systemctl restart vía sudoers NOPASSWD (grupo infra ya configurado)
+#   - sudo systemctl restart vía sudoers NOPASSWD strict (W13.1).
+#     REQUIERE: /etc/sudoers.d/cis-deploy instalado en el host destino.
+#     Install: sudo bash /srv/projects/cis/scripts/install-sudoers-cis-deploy.sh
+#     Doc:     /srv/projects/cis/cis-docs/runbooks/sudoers-cis-deploy.md
+#     Sin esto, el CD cuelga en el step de restart (CI runner no tiene tty
+#     para responder password prompt).
 #
 # Idempotente: este script puede correr N veces sin efectos colaterales.
 

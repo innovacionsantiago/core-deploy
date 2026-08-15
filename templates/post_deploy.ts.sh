@@ -7,6 +7,13 @@
 #
 # Para sitios estáticos servidos por Caddy (sin systemd unit) este script
 # igual hace el build · skip restart si la unit no existe.
+#
+# sudo systemctl restart vía sudoers NOPASSWD strict (W13.1).
+# REQUIERE: /etc/sudoers.d/cis-deploy instalado en el host destino.
+# Install: sudo bash /srv/projects/cis/scripts/install-sudoers-cis-deploy.sh
+# Doc:     /srv/projects/cis/cis-docs/runbooks/sudoers-cis-deploy.md
+# Sin esto, el CD cuelga en el step de restart (CI runner no tiene tty
+# para responder password prompt).
 
 set -euo pipefail
 
