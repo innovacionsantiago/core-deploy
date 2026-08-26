@@ -271,7 +271,12 @@ jobs:
           old_head="$(git rev-parse HEAD)"
           old_index_tree="$(git write-tree)"
           git fetch --no-tags origin "$RELEASE_SHA"
-          if ! git diff --exit-code "$RELEASE_SHA" -- .; then
+          verify_dir="$(mktemp -d)"
+          verify_index="$verify_dir/index"
+          trap 'rm -rf "$verify_dir"' EXIT
+          GIT_INDEX_FILE="$verify_index" git read-tree "$RELEASE_SHA"
+          if ! GIT_INDEX_FILE="$verify_index" git diff-files --quiet; then
+            GIT_INDEX_FILE="$verify_index" git diff-files --name-status
             echo "::error::checkout differs from release $RELEASE_SHA after rsync"
             exit 1
           fi
