@@ -89,6 +89,7 @@ jobs:
       HEALTH_URL: ${{ inputs.health_url }}
       EXTRA_EXCLUDES: ${{ inputs.rsync_excludes }}
       WORKDIR: ${{ inputs.working_directory }}
+      RELEASE_SHA: ${{ github.sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -220,7 +221,6 @@ jobs:
         run: |
           excludes=(
             --exclude='.git'
-            --exclude='.github'
             --exclude='.venv'
             --exclude='venv'
             --exclude='__pycache__'
@@ -246,6 +246,50 @@ jobs:
           rsync -az --delete "${excludes[@]}" \
             -e "ssh -o BatchMode=yes" \
             ./ "vps-cis:$TARGET_PATH/"
+
+      - name: Post-rsync · reconcile checkout metadata
+        shell: bash
+        run: |
+          if [ "$WORKDIR" != "." ]; then
+            echo "::notice::checkout reconciliation skipped for working_directory=$WORKDIR"
+            exit 0
+          fi
+          if [ -n "$EXTRA_EXCLUDES" ]; then
+            echo "::notice::checkout reconciliation skipped with custom rsync excludes"
+            exit 0
+          fi
+          remote_target="$(printf '%q' "$TARGET_PATH")"
+          remote_sha="$(printf '%q' "$RELEASE_SHA")"
+          ssh vps-cis "TARGET_PATH=$remote_target RELEASE_SHA=$remote_sha bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd "$TARGET_PATH"
+          if [ ! -d .git ]; then
+            echo "::notice::target is not a Git checkout; metadata reconciliation skipped"
+            exit 0
+          fi
+
+          old_head="$(git rev-parse HEAD)"
+          old_index_tree="$(git write-tree)"
+          git fetch --no-tags origin "$RELEASE_SHA"
+          if ! git diff --exit-code "$RELEASE_SHA" -- .; then
+            echo "::error::checkout differs from release $RELEASE_SHA after rsync"
+            exit 1
+          fi
+
+          rollback_metadata() {
+            git read-tree "$old_index_tree"
+            if [ "$(git rev-parse HEAD)" != "$old_head" ]; then
+              git reset --soft "$old_head"
+            fi
+          }
+          trap rollback_metadata ERR
+          git read-tree "$RELEASE_SHA"
+          git reset --soft "$RELEASE_SHA"
+          git diff --exit-code
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          trap - ERR
+          echo "::notice::checkout metadata aligned to $RELEASE_SHA"
+          REMOTE
 
       - name: Run post-deploy script
         shell: bash
