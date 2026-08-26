@@ -20,6 +20,7 @@ class CheckoutIntegrityTests(unittest.TestCase):
         self.assertIn('verify_dir="$(mktemp -d)"', self.workflow)
         self.assertIn('verify_index="$verify_dir/index"', self.workflow)
         self.assertIn('GIT_INDEX_FILE="$verify_index" git read-tree "$RELEASE_SHA"', self.workflow)
+        self.assertIn('GIT_INDEX_FILE="$verify_index" git update-index --refresh', self.workflow)
         self.assertIn('GIT_INDEX_FILE="$verify_index" git diff-files --quiet', self.workflow)
         self.assertNotIn('git diff --exit-code "$RELEASE_SHA" -- .', self.workflow)
         self.assertIn('git read-tree "$RELEASE_SHA"', self.workflow)

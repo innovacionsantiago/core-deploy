@@ -275,6 +275,7 @@ jobs:
           verify_index="$verify_dir/index"
           trap 'rm -rf "$verify_dir"' EXIT
           GIT_INDEX_FILE="$verify_index" git read-tree "$RELEASE_SHA"
+          GIT_INDEX_FILE="$verify_index" git update-index --refresh || true
           if ! GIT_INDEX_FILE="$verify_index" git diff-files --quiet; then
             GIT_INDEX_FILE="$verify_index" git diff-files --name-status
             echo "::error::checkout differs from release $RELEASE_SHA after rsync"
