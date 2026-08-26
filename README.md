@@ -78,6 +78,8 @@ Los scripts son **idempotentes**: pueden correr N veces sin efectos colaterales.
 - **SSH key inyectada via env**, no en `run:` literal (evita leak en logs).
 - **`target_path` validado**: debe empezar con `/srv/`. Evita typos catastróficos tipo `/etc` o `/`.
 - **rsync `--delete`** activado. Lo que no esté en el repo se borra del target. Excludes default protegen `.env`, `.git`, `node_modules`, `.venv`, etc.
+- **Integridad de release**: después de rsync, un checkout Git debe coincidir byte a byte con `${{ github.sha }}`. Sólo entonces el workflow alinea `HEAD` e índice al commit servido. Si hay diferencias, aborta antes del post-deploy.
+- **Alcance de la reconciliación**: se omite con `working_directory != '.'`, `rsync_excludes` personalizados o targets sin `.git`; el log deja el motivo explícito. `.github/` sí se sincroniza para evitar checkouts permanentemente dirty.
 - **Concurrency group** por `service_name`: dos deploys del mismo servicio no corren en paralelo.
 - **SSH key cleanup** en step `if: always()` post-deploy.
 
